@@ -141,12 +141,29 @@ const parsePlayerState = (rawPlayerHand: unknown, betAmount: number): PlayerStat
 
 const getHandScore = (hand: Card[]): number => blackjackService.calculateScore(hand);
 
+const getSplitComparableValue = (card: Card): number | string => {
+  if (["10", "J", "Q", "K"].includes(card.value)) {
+    return 10;
+  }
+
+  return card.value;
+};
+
+const canSplitPair = (hand: Card[]): boolean => {
+  if (hand.length !== 2) {
+    return false;
+  }
+
+  return getSplitComparableValue(hand[0]) === getSplitComparableValue(hand[1]);
+};
+
 const updateActiveHandIndex = (state: PlayerState) => {
   const nextIndex = state.hands.findIndex((hand, index) => !state.stood[index] && getHandScore(hand) <= 21);
   state.activeHandIndex = nextIndex >= 0 ? nextIndex : -1;
 };
 
 const allHandsClosed = (state: PlayerState): boolean => state.activeHandIndex < 0;
+const allPlayerHandsBusted = (state: PlayerState): boolean => state.hands.every((hand) => getHandScore(hand) > 21);
 
 const totalBet = (state: PlayerState): number => state.bets.reduce((acc, bet) => acc + bet, 0);
 
@@ -155,6 +172,14 @@ const settleSessionIfNeeded = (session: GameSession): { payout: number; outcome:
 
   if (!allHandsClosed(session.playerState)) {
     return null;
+  }
+
+  if (allPlayerHandsBusted(session.playerState)) {
+    return {
+      payout: 0,
+      outcome: -totalBet(session.playerState),
+      finalStatus: "DEALER_WON",
+    };
   }
 
   const dealerResult = blackjackService.dealerTurn(session.deck, session.dealerHand);
@@ -217,8 +242,7 @@ const getAvailableActions = (state: PlayerState, status: BlackjackStatus, chipBa
 
   const canSplit = (
     state.hands.length === 1
-    && hand.length === 2
-    && hand[0]?.value === hand[1]?.value
+    && canSplitPair(hand)
     && chipBalance >= handBet
     && !state.doubled[index]
     && state.actionsTaken[index] === 0
@@ -395,7 +419,7 @@ const applySplitOnSession = async (
   }
 
   const hand = state.hands[index];
-  if (!hand || hand.length !== 2 || hand[0].value !== hand[1].value || state.actionsTaken[index] > 0) {
+  if (!hand || !canSplitPair(hand) || state.actionsTaken[index] > 0) {
     throw new HttpError(400, "Split non autorisé pour cette main.");
   }
 
