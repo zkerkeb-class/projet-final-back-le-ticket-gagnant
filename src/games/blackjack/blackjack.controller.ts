@@ -5,6 +5,7 @@ import { BlackjackService, Card } from "./blackjack.service";
 
 const router = Router();
 const blackjackService = new BlackjackService();
+const allowLocalFallback = process.env.BLACKJACK_LOCAL_FALLBACK === "true";
 
 type BlackjackStatus = "ACTIVE" | "PLAYER_WON" | "DEALER_WON" | "PUSH";
 type ActionType = "HIT" | "STAND" | "DOUBLE";
@@ -568,6 +569,10 @@ router.post("/start", async (req, res) => {
   } catch (error) {
     console.error(error);
     if (isDatabaseUnavailableError(error)) {
+      if (!allowLocalFallback) {
+        return res.status(503).json({ message: "Base de données indisponible. Activez PostgreSQL." });
+      }
+
       try {
         const { userId, betAmount } = req.body as { userId?: string; betAmount?: number };
         if (typeof betAmount !== "number" || Number.isNaN(betAmount) || betAmount <= 0) {
@@ -615,7 +620,7 @@ router.post("/hit", async (req, res) => {
       return res.status(400).json({ message: "Payload invalide: sessionId requis." });
     }
 
-    if (localSessions.has(sessionId)) {
+    if (allowLocalFallback && localSessions.has(sessionId)) {
       try {
         const localSession = localSessions.get(sessionId);
         if (!localSession || (userId && localSession.userId !== userId)) {
@@ -718,6 +723,10 @@ router.post("/hit", async (req, res) => {
   } catch (error) {
     console.error(error);
     if (isDatabaseUnavailableError(error)) {
+      if (!allowLocalFallback) {
+        return res.status(503).json({ message: "Base de données indisponible. Activez PostgreSQL." });
+      }
+
       try {
         const { userId, sessionId } = req.body as { userId?: string; sessionId?: string };
         if (!sessionId) {
@@ -763,7 +772,7 @@ router.post("/stand", async (req, res) => {
       return res.status(400).json({ message: "Payload invalide: sessionId requis." });
     }
 
-    if (localSessions.has(sessionId)) {
+    if (allowLocalFallback && localSessions.has(sessionId)) {
       try {
         const localSession = localSessions.get(sessionId);
         if (!localSession || (userId && localSession.userId !== userId)) {
@@ -866,6 +875,10 @@ router.post("/stand", async (req, res) => {
   } catch (error) {
     console.error(error);
     if (isDatabaseUnavailableError(error)) {
+      if (!allowLocalFallback) {
+        return res.status(503).json({ message: "Base de données indisponible. Activez PostgreSQL." });
+      }
+
       try {
         const { userId, sessionId } = req.body as { userId?: string; sessionId?: string };
         if (!sessionId) {
@@ -911,7 +924,7 @@ router.post("/double", async (req, res) => {
       return res.status(400).json({ message: "Payload invalide: sessionId requis." });
     }
 
-    if (localSessions.has(sessionId)) {
+    if (allowLocalFallback && localSessions.has(sessionId)) {
       const localSession = localSessions.get(sessionId);
       if (!localSession || (userId && localSession.userId !== userId)) {
         return res.status(404).json({ message: "Session Blackjack introuvable." });
@@ -1014,6 +1027,10 @@ router.post("/double", async (req, res) => {
     }
 
     if (isDatabaseUnavailableError(error)) {
+      if (!allowLocalFallback) {
+        return res.status(503).json({ message: "Base de données indisponible. Activez PostgreSQL." });
+      }
+
       return res.status(503).json({ message: "Base de données indisponible. Session non trouvée en local." });
     }
 
@@ -1029,7 +1046,7 @@ router.post("/split", async (req, res) => {
       return res.status(400).json({ message: "Payload invalide: sessionId requis." });
     }
 
-    if (localSessions.has(sessionId)) {
+    if (allowLocalFallback && localSessions.has(sessionId)) {
       const localSession = localSessions.get(sessionId);
       if (!localSession || (userId && localSession.userId !== userId)) {
         return res.status(404).json({ message: "Session Blackjack introuvable." });
@@ -1132,6 +1149,10 @@ router.post("/split", async (req, res) => {
     }
 
     if (isDatabaseUnavailableError(error)) {
+      if (!allowLocalFallback) {
+        return res.status(503).json({ message: "Base de données indisponible. Activez PostgreSQL." });
+      }
+
       return res.status(503).json({ message: "Base de données indisponible. Session non trouvée en local." });
     }
 
