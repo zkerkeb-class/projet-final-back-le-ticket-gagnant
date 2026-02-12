@@ -1,6 +1,9 @@
 import { Router } from "express";
 import rouletteRouter from "../games/roulette/route";
 import blackjackRouter from "../games/blackjack/blackjack.controller";
+import minesRouter from "../games/mines/mines.controller";
+import crashRouter from "../games/crash/crash.controller";
+import luckyLadderRouter from "../games/lucky-ladder/lucky-ladder.controller";
 import prisma from "../config/prisma";
 
 const router = Router();
@@ -113,5 +116,8 @@ router.get("/users/balance", async (req, res) => {
 
 router.use("/roulette", rouletteRouter);
 router.use("/games/blackjack", blackjackRouter);
+router.use("/games/mines", minesRouter);
+router.use("/games/crash", crashRouter);
+router.use("/games/lucky-ladder", luckyLadderRouter);
 
 export default router;
