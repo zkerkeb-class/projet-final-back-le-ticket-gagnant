@@ -9,6 +9,20 @@ const allowLocalFallback = process.env.BLACKJACK_LOCAL_FALLBACK === "true";
 
 type BlackjackStatus = "ACTIVE" | "PLAYER_WON" | "DEALER_WON" | "PUSH";
 type ActionType = "HIT" | "STAND" | "DOUBLE";
+type SideBetType = "perfectPair" | "twentyOnePlusThree";
+
+type SideBetInput = Record<SideBetType, number>;
+
+type SideBetResult = {
+  id: SideBetType;
+  label: string;
+  betAmount: number;
+  won: boolean;
+  payoutMultiplier: number;
+  payout: number;
+  outcome: number;
+  hit: string | null;
+};
 
 type PlayerState = {
   hands: Card[][];
@@ -18,6 +32,10 @@ type PlayerState = {
   actionsTaken: number[];
   activeHandIndex: number;
   splitAces: boolean;
+  sideBets: SideBetInput;
+  sideBetResults: SideBetResult[];
+  sideBetOutcome: number;
+  sideBetPayout: number;
 };
 
 type GameSession = {
@@ -92,6 +110,40 @@ const parseCards = (value: unknown): Card[] => {
   return value as Card[];
 };
 
+const defaultSideBets = (): SideBetInput => ({
+  perfectPair: 0,
+  twentyOnePlusThree: 0,
+});
+
+const parsePositiveOrZero = (value: unknown): number | null => {
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    return null;
+  }
+
+  return value;
+};
+
+const parseSideBetsInput = (value: unknown): SideBetInput => {
+  if (!value || typeof value !== "object") {
+    return defaultSideBets();
+  }
+
+  const candidate = value as Partial<Record<SideBetType, unknown>>;
+  const perfectPair = parsePositiveOrZero(candidate.perfectPair);
+  const twentyOnePlusThree = parsePositiveOrZero(candidate.twentyOnePlusThree);
+
+  if (perfectPair === null || twentyOnePlusThree === null) {
+    throw new HttpError(400, "Payload invalide: sideBets doit contenir des montants >= 0.");
+  }
+
+  return {
+    perfectPair,
+    twentyOnePlusThree,
+  };
+};
+
+const totalSideBetAmount = (sideBets: SideBetInput): number => sideBets.perfectPair + sideBets.twentyOnePlusThree;
+
 const buildInitialPlayerState = (cards: Card[], betAmount: number): PlayerState => ({
   hands: [cards],
   bets: [betAmount],
@@ -100,6 +152,10 @@ const buildInitialPlayerState = (cards: Card[], betAmount: number): PlayerState 
   actionsTaken: [0],
   activeHandIndex: 0,
   splitAces: false,
+  sideBets: defaultSideBets(),
+  sideBetResults: [],
+  sideBetOutcome: 0,
+  sideBetPayout: 0,
 });
 
 const parsePlayerState = (rawPlayerHand: unknown, betAmount: number): PlayerState => {
@@ -128,6 +184,43 @@ const parsePlayerState = (rawPlayerHand: unknown, betAmount: number): PlayerStat
     ? candidate.actionsTaken.map((value) => (typeof value === "number" ? value : 0))
     : Array(count).fill(0);
 
+  const candidateSideBets = (candidate as Partial<{ sideBets: unknown }>).sideBets;
+  let sideBets = defaultSideBets();
+
+  try {
+    sideBets = parseSideBetsInput(candidateSideBets);
+  } catch {
+    sideBets = defaultSideBets();
+  }
+
+  const sideBetResultsRaw = (candidate as Partial<{ sideBetResults: unknown }>).sideBetResults;
+  const sideBetResults = Array.isArray(sideBetResultsRaw)
+    ? sideBetResultsRaw.filter((item): item is SideBetResult => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+
+      const typed = item as Partial<SideBetResult>;
+      return (
+        (typed.id === "perfectPair" || typed.id === "twentyOnePlusThree")
+        && typeof typed.label === "string"
+        && typeof typed.betAmount === "number"
+        && typeof typed.won === "boolean"
+        && typeof typed.payoutMultiplier === "number"
+        && typeof typed.payout === "number"
+        && typeof typed.outcome === "number"
+      );
+    })
+    : [];
+
+  const sideBetOutcome = typeof (candidate as Partial<{ sideBetOutcome: unknown }>).sideBetOutcome === "number"
+    ? Number((candidate as Partial<{ sideBetOutcome: number }>).sideBetOutcome)
+    : 0;
+
+  const sideBetPayout = typeof (candidate as Partial<{ sideBetPayout: unknown }>).sideBetPayout === "number"
+    ? Number((candidate as Partial<{ sideBetPayout: number }>).sideBetPayout)
+    : 0;
+
   return {
     hands,
     bets,
@@ -136,6 +229,136 @@ const parsePlayerState = (rawPlayerHand: unknown, betAmount: number): PlayerStat
     actionsTaken,
     activeHandIndex: typeof candidate.activeHandIndex === "number" ? candidate.activeHandIndex : 0,
     splitAces: Boolean(candidate.splitAces),
+    sideBets,
+    sideBetResults,
+    sideBetOutcome,
+    sideBetPayout,
+  };
+};
+
+const getSuitColor = (suit: Card["suit"]): "RED" | "BLACK" => (suit === "H" || suit === "D" ? "RED" : "BLACK");
+
+const getCardRankForStraight = (card: Card): number => {
+  if (card.value === "A") {
+    return 14;
+  }
+
+  if (card.value === "K") {
+    return 13;
+  }
+
+  if (card.value === "Q") {
+    return 12;
+  }
+
+  if (card.value === "J") {
+    return 11;
+  }
+
+  return Number(card.value);
+};
+
+const evaluatePerfectPair = (first: Card, second: Card): { multiplier: number; hit: string | null } => {
+  if (first.value !== second.value) {
+    return { multiplier: 0, hit: null };
+  }
+
+  if (first.suit === second.suit) {
+    return { multiplier: 25, hit: "Perfect Pair" };
+  }
+
+  if (getSuitColor(first.suit) === getSuitColor(second.suit)) {
+    return { multiplier: 12, hit: "Colored Pair" };
+  }
+
+  return { multiplier: 6, hit: "Mixed Pair" };
+};
+
+const evaluateTwentyOnePlusThree = (cards: Card[]): { multiplier: number; hit: string | null } => {
+  if (cards.length !== 3) {
+    return { multiplier: 0, hit: null };
+  }
+
+  const [first, second, third] = cards;
+  const values = cards.map((card) => card.value);
+  const ranks = cards.map(getCardRankForStraight).sort((a, b) => a - b);
+  const uniqueValuesCount = new Set(values).size;
+  const flush = first.suit === second.suit && second.suit === third.suit;
+  const isTrips = uniqueValuesCount === 1;
+
+  const straight = (() => {
+    if (ranks[0] + 1 === ranks[1] && ranks[1] + 1 === ranks[2]) {
+      return true;
+    }
+
+    const aceLow = [...ranks].sort((a, b) => a - b);
+    return aceLow[0] === 2 && aceLow[1] === 3 && aceLow[2] === 14;
+  })();
+
+  if (isTrips && flush) {
+    return { multiplier: 100, hit: "Suited Trips" };
+  }
+
+  if (flush && straight) {
+    return { multiplier: 40, hit: "Straight Flush" };
+  }
+
+  if (isTrips) {
+    return { multiplier: 30, hit: "Three of a Kind" };
+  }
+
+  if (straight) {
+    return { multiplier: 10, hit: "Straight" };
+  }
+
+  if (flush) {
+    return { multiplier: 5, hit: "Flush" };
+  }
+
+  return { multiplier: 0, hit: null };
+};
+
+const settleSideBets = (playerHand: Card[], dealerUpCard: Card, sideBets: SideBetInput): {
+  results: SideBetResult[];
+  payout: number;
+  outcome: number;
+} => {
+  const results: SideBetResult[] = [];
+
+  const perfectPairEval = evaluatePerfectPair(playerHand[0], playerHand[1]);
+  const perfectPairPayout = sideBets.perfectPair > 0 ? sideBets.perfectPair * (perfectPairEval.multiplier + 1) : 0;
+  results.push({
+    id: "perfectPair",
+    label: "Perfect Pair",
+    betAmount: sideBets.perfectPair,
+    won: perfectPairEval.multiplier > 0,
+    payoutMultiplier: perfectPairEval.multiplier,
+    payout: perfectPairPayout,
+    outcome: perfectPairPayout - sideBets.perfectPair,
+    hit: perfectPairEval.hit,
+  });
+
+  const twentyOneEval = evaluateTwentyOnePlusThree([playerHand[0], playerHand[1], dealerUpCard]);
+  const twentyOnePayout = sideBets.twentyOnePlusThree > 0 ? sideBets.twentyOnePlusThree * (twentyOneEval.multiplier + 1) : 0;
+  results.push({
+    id: "twentyOnePlusThree",
+    label: "21+3",
+    betAmount: sideBets.twentyOnePlusThree,
+    won: twentyOneEval.multiplier > 0,
+    payoutMultiplier: twentyOneEval.multiplier,
+    payout: twentyOnePayout,
+    outcome: twentyOnePayout - sideBets.twentyOnePlusThree,
+    hit: twentyOneEval.hit,
+  });
+
+  const payout = results.reduce((acc, result) => acc + result.payout, 0);
+  const totalBet = totalSideBetAmount(sideBets);
+  const outcome = payout - totalBet;
+
+  return {
+    results,
+    payout,
+    outcome,
   };
 };
 
@@ -274,7 +497,13 @@ const buildSessionResponse = (session: GameSession, chipBalance: number, mode?: 
     sessionId: session.id,
     status: session.status,
     betAmount: totalBet(session.playerState),
+    sideBetTotal: totalSideBetAmount(session.playerState.sideBets),
+    totalWager: totalBet(session.playerState) + totalSideBetAmount(session.playerState.sideBets),
     outcome: session.outcome,
+    sideBetOutcome: session.playerState.sideBetOutcome,
+    sideBetPayout: session.playerState.sideBetPayout,
+    sideBetResults: session.playerState.sideBetResults,
+    sideBets: session.playerState.sideBets,
     chipBalance,
     playerHand: playerHands[currentIndex] ?? [],
     playerScore: getHandScore(playerHands[currentIndex] ?? []),
@@ -381,7 +610,7 @@ const applyActionOnSession = async (
   const settlement = settleSessionIfNeeded(session);
   if (settlement) {
     session.status = settlement.finalStatus;
-    session.outcome = settlement.outcome;
+    session.outcome = settlement.outcome + session.playerState.sideBetOutcome;
     session.betAmount = totalBet(state);
 
     if (settlement.payout > 0) {
@@ -389,7 +618,7 @@ const applyActionOnSession = async (
     }
   } else {
     session.betAmount = totalBet(state);
-    session.outcome = 0;
+    session.outcome = session.playerState.sideBetOutcome;
   }
 
   return {
@@ -517,11 +746,15 @@ const saveSessionToDb = async (session: GameSession) => prisma.blackjackSession.
 
 router.post("/start", async (req, res) => {
   try {
-    const { userId, betAmount } = req.body as { userId?: string; betAmount?: number };
+    const { userId, betAmount, sideBets } = req.body as { userId?: string; betAmount?: number; sideBets?: unknown };
 
     if (typeof betAmount !== "number" || Number.isNaN(betAmount) || betAmount <= 0) {
       return res.status(400).json({ message: "Payload invalide: betAmount (> 0) requis." });
     }
+
+    const parsedSideBets = parseSideBetsInput(sideBets);
+    const sideBetTotal = totalSideBetAmount(parsedSideBets);
+    const totalInitialDebit = betAmount + sideBetTotal;
 
     const user = userId
       ? await prisma.user.findUnique({ where: { id: userId } })
@@ -531,7 +764,7 @@ router.post("/start", async (req, res) => {
       return res.status(404).json({ message: "Utilisateur introuvable." });
     }
 
-    if (user.chipBalance < betAmount) {
+    if (user.chipBalance < totalInitialDebit) {
       return res.status(400).json({ message: "Solde insuffisant." });
     }
 
@@ -547,21 +780,44 @@ router.post("/start", async (req, res) => {
     const playerHand: Card[] = [playerDraw1.card, playerDraw2.card];
     const dealerHand: Card[] = [dealerDraw1.card];
     const playerState = buildInitialPlayerState(playerHand, betAmount);
+    playerState.sideBets = parsedSideBets;
+
+    const sideBetSettlement = settleSideBets(playerHand, dealerHand[0], parsedSideBets);
+    playerState.sideBetResults = sideBetSettlement.results;
+    playerState.sideBetOutcome = sideBetSettlement.outcome;
+    playerState.sideBetPayout = sideBetSettlement.payout;
 
     const { session, updatedUser } = await prisma.$transaction(async (tx) => {
       const debitedUser = await tx.user.update({
         where: { id: user.id },
-        data: { chipBalance: { decrement: betAmount } },
+        data: { chipBalance: { decrement: totalInitialDebit } },
       });
 
       await tx.transaction.create({
         data: {
           userId: user.id,
-          amount: betAmount,
+          amount: totalInitialDebit,
           type: "BET",
           game: "BLACKJACK",
         },
       });
+
+      let creditedUser = debitedUser;
+      if (sideBetSettlement.payout > 0) {
+        creditedUser = await tx.user.update({
+          where: { id: user.id },
+          data: { chipBalance: { increment: sideBetSettlement.payout } },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId: user.id,
+            amount: sideBetSettlement.payout,
+            type: "WIN",
+            game: "BLACKJACK",
+          },
+        });
+      }
 
       const createdSession = await tx.blackjackSession.create({
         data: {
@@ -571,11 +827,11 @@ router.post("/start", async (req, res) => {
           dealerHand,
           status: "ACTIVE",
           betAmount,
-          outcome: 0,
+          outcome: sideBetSettlement.outcome,
         },
       });
 
-      return { session: createdSession, updatedUser: debitedUser };
+      return { session: createdSession, updatedUser: creditedUser };
     });
 
     const normalizedSession: GameSession = {
@@ -598,13 +854,17 @@ router.post("/start", async (req, res) => {
       }
 
       try {
-        const { userId, betAmount } = req.body as { userId?: string; betAmount?: number };
+        const { userId, betAmount, sideBets } = req.body as { userId?: string; betAmount?: number; sideBets?: unknown };
         if (typeof betAmount !== "number" || Number.isNaN(betAmount) || betAmount <= 0) {
           return res.status(400).json({ message: "Payload invalide: betAmount (> 0) requis." });
         }
 
+        const parsedSideBets = parseSideBetsInput(sideBets);
+        const sideBetTotal = totalSideBetAmount(parsedSideBets);
+        const totalInitialDebit = betAmount + sideBetTotal;
+
         const localUser = resolveLocalUser(userId);
-        if (localUser.chipBalance < betAmount) {
+        if (localUser.chipBalance < totalInitialDebit) {
           return res.status(400).json({ message: "Solde insuffisant." });
         }
 
@@ -613,7 +873,18 @@ router.post("/start", async (req, res) => {
         const p2 = drawOrThrow(p1.deck);
         const d1 = drawOrThrow(p2.deck);
 
-        localUser.chipBalance -= betAmount;
+        const playerState = buildInitialPlayerState([p1.card, p2.card], betAmount);
+        playerState.sideBets = parsedSideBets;
+
+        const sideBetSettlement = settleSideBets([p1.card, p2.card], d1.card, parsedSideBets);
+        playerState.sideBetResults = sideBetSettlement.results;
+        playerState.sideBetOutcome = sideBetSettlement.outcome;
+        playerState.sideBetPayout = sideBetSettlement.payout;
+
+        localUser.chipBalance -= totalInitialDebit;
+        if (sideBetSettlement.payout > 0) {
+          localUser.chipBalance += sideBetSettlement.payout;
+        }
 
         const localSession: GameSession = {
           id: randomUUID(),
@@ -622,8 +893,8 @@ router.post("/start", async (req, res) => {
           dealerHand: [d1.card],
           status: "ACTIVE",
           betAmount,
-          outcome: 0,
-          playerState: buildInitialPlayerState([p1.card, p2.card], betAmount),
+          outcome: sideBetSettlement.outcome,
+          playerState,
         };
 
         localSessions.set(localSession.id, localSession);
