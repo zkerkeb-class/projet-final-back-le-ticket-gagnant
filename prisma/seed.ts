@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
+import bcrypt from "bcryptjs";
 import { PrismaClient } from "../src/generated/prisma/client";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -14,6 +15,8 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
+  const seedPassword = await bcrypt.hash("password123", 10);
+
   // Clean existing data
   await prisma.blackjackSession.deleteMany();
   await prisma.transaction.deleteMany();
@@ -23,7 +26,7 @@ async function main() {
   const user1 = await prisma.user.create({
     data: {
       email: "alice@casino.com",
-      password: "password123",
+      password: seedPassword,
       username: "alice",
       chipBalance: 1000,
     },
@@ -32,7 +35,7 @@ async function main() {
   const user2 = await prisma.user.create({
     data: {
       email: "bob@casino.com",
-      password: "password123",
+      password: seedPassword,
       username: "bob",
       chipBalance: 1000,
     },
