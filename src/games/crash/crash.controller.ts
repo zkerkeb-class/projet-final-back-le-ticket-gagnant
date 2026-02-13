@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import prisma from "../../config/prisma";
+import { PersistentMap } from "../../utils/persistentMap";
 
 type CrashStatus = "ACTIVE" | "LOST" | "CASHED_OUT";
 
@@ -17,7 +18,7 @@ type CrashSession = {
 };
 
 const router = Router();
-const sessions = new Map<string, CrashSession>();
+const sessions = new PersistentMap<CrashSession>("crash.json");
 const crashHistory: number[] = [];
 
 const GROWTH_PER_SECOND = 0.06;
@@ -25,9 +26,10 @@ const HOUSE_EDGE = 0.99;
 const MAX_CRASH_MULTIPLIER = 100;
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
+const secureRandom = (): number => randomInt(0, 1_000_000) / 1_000_000;
 
 const generateCrashPoint = (): number => {
-  const randomValue = Math.random();
+  const randomValue = secureRandom();
   const raw = HOUSE_EDGE / Math.max(1 - randomValue, 0.0001);
   return round2(Math.min(MAX_CRASH_MULTIPLIER, Math.max(1.01, raw)));
 };
@@ -50,9 +52,11 @@ const pushCrashHistory = (value: number) => {
 };
 
 const resolveUser = async (userId?: string) => {
-  const user = userId
-    ? await prisma.user.findUnique({ where: { id: userId } })
-    : await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!userId) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
 
   return user;
 };

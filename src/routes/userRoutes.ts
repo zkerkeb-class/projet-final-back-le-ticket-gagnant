@@ -1,44 +1,9 @@
-import { NextFunction, Request, Response, Router } from "express";
-import jwt from "jsonwebtoken";
+import { Response, Router } from "express";
 import prisma from "../config/prisma";
-
-type JwtPayload = {
-  userId: string;
-  email: string;
-  iat: number;
-  exp: number;
-};
-
-type AuthenticatedRequest = Request & {
-  auth?: {
-    userId: string;
-    email: string;
-  };
-};
+import { AuthenticatedRequest, requireAuth } from "../middlewares/auth";
+import { updateProfileSchema } from "../utils/validation";
 
 const userRouter = Router();
-
-const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
-
-const requireAuth = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Token manquant." });
-  }
-
-  const token = authHeader.split(" ")[1];
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
-    req.auth = {
-      userId: decoded.userId,
-      email: decoded.email,
-    };
-    return next();
-  } catch {
-    return res.status(401).json({ message: "Token invalide ou expiré." });
-  }
-};
 
 userRouter.get("/profile", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -77,17 +42,13 @@ userRouter.put("/profile", requireAuth, async (req: AuthenticatedRequest, res: R
       return res.status(401).json({ message: "Non autorisé." });
     }
 
-    const { username, email } = req.body as {
-      username?: string;
-      email?: string;
-    };
-
-    const nextUsername = username?.trim();
-    const nextEmail = email?.trim().toLowerCase();
-
-    if (!nextUsername && !nextEmail) {
-      return res.status(400).json({ message: "Aucune donnée à mettre à jour." });
+    const parsed = updateProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Payload invalide pour la mise à jour du profil." });
     }
+
+    const nextUsername = parsed.data.username;
+    const nextEmail = parsed.data.email;
 
     const existingUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!existingUser) {

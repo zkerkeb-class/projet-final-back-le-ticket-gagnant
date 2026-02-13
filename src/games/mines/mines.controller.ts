@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
+import { randomInt } from "node:crypto";
 import prisma from "../../config/prisma";
+import { PersistentMap } from "../../utils/persistentMap";
 
 type MinesStatus = "ACTIVE" | "WON" | "LOST" | "CASHED_OUT";
 
@@ -24,7 +26,7 @@ const MINES_MIN = 1;
 const MINES_MAX = 24;
 const HOUSE_EDGE = 0.97;
 
-const sessions = new Map<string, MinesSession>();
+const sessions = new PersistentMap<MinesSession>("mines.json");
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
@@ -32,7 +34,7 @@ const pickRandomMinePositions = (minesCount: number): number[] => {
   const positions = new Set<number>();
 
   while (positions.size < minesCount) {
-    positions.add(Math.floor(Math.random() * GRID_SIZE));
+    positions.add(randomInt(GRID_SIZE));
   }
 
   return Array.from(positions).sort((a, b) => a - b);
@@ -80,9 +82,11 @@ const buildResponse = (session: MinesSession, chipBalance: number) => {
 };
 
 const resolveUser = async (userId?: string) => {
-  const user = userId
-    ? await prisma.user.findUnique({ where: { id: userId } })
-    : await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!userId) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
 
   if (!user) {
     return null;

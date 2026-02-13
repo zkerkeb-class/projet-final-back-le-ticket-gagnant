@@ -5,7 +5,7 @@ import { BlackjackService, Card } from "./blackjack.service";
 
 const router = Router();
 const blackjackService = new BlackjackService();
-const allowLocalFallback = process.env.BLACKJACK_LOCAL_FALLBACK === "true";
+const allowLocalFallback = process.env.BLACKJACK_LOCAL_FALLBACK === "true" && process.env.NODE_ENV !== "production";
 
 type BlackjackStatus = "ACTIVE" | "PLAYER_WON" | "DEALER_WON" | "PUSH";
 type ActionType = "HIT" | "STAND" | "DOUBLE";
@@ -756,9 +756,11 @@ router.post("/start", async (req, res) => {
     const sideBetTotal = totalSideBetAmount(parsedSideBets);
     const totalInitialDebit = betAmount + sideBetTotal;
 
-    const user = userId
-      ? await prisma.user.findUnique({ where: { id: userId } })
-      : await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+    if (!userId) {
+      return res.status(401).json({ message: "Utilisateur non authentifié." });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
       return res.status(404).json({ message: "Utilisateur introuvable." });

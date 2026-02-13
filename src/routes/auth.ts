@@ -1,14 +1,31 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
 import prisma from "../config/prisma";
+import { getJwtSecret } from "../config/security";
+import { loginSchema, registerSchema } from "../utils/validation";
 
 const authRouter = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
+const JWT_SECRET = getJwtSecret();
 const JWT_EXPIRES_IN = "7d";
 const BCRYPT_HASH_REGEX = /^\$2[aby]\$\d{2}\$.{53}$/;
-const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
+const isProduction = process.env.NODE_ENV === "production";
+const ENABLE_RATE_LIMIT = isProduction || process.env.ENABLE_RATE_LIMIT_IN_DEV === "true";
+const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX ?? (isProduction ? 12 : 300));
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: AUTH_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { message: "Trop de tentatives. Réessayez plus tard." },
+});
+
+if (ENABLE_RATE_LIMIT) {
+  authRouter.use(authLimiter);
+}
 
 const buildToken = (userId: string, email: string) => {
   return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -16,25 +33,17 @@ const buildToken = (userId: string, email: string) => {
 
 authRouter.post("/register", async (req, res) => {
   try {
-    const { username, email, password } = req.body as {
-      username?: string;
-      email?: string;
-      password?: string;
-    };
-
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: "Username, email et mot de passe requis." });
-    }
-
-    if (!STRONG_PASSWORD_REGEX.test(password)) {
+    const parsed = registerSchema.safeParse(req.body);
+    if (!parsed.success) {
       return res.status(400).json({
-        message:
-          "Mot de passe trop faible. Utilisez au moins 8 caractères avec majuscule, minuscule, chiffre et caractère spécial.",
+        message: "Payload invalide pour l'inscription.",
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedUsername = username.trim();
+    const { username, email, password } = parsed.data;
+
+    const normalizedEmail = email;
+    const normalizedUsername = username;
 
     const [existingEmail, existingUsername] = await Promise.all([
       prisma.user.findUnique({ where: { email: normalizedEmail } }),
@@ -79,16 +88,13 @@ authRouter.post("/register", async (req, res) => {
 
 authRouter.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body as {
-      email?: string;
-      password?: string;
-    };
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email et mot de passe requis." });
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Payload invalide pour la connexion." });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const { email, password } = parsed.data;
+    const normalizedEmail = email;
 
     const user = await prisma.user.findUnique({
       where: { email: normalizedEmail },

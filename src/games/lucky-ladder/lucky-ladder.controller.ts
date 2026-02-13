@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import prisma from "../../config/prisma";
+import { PersistentMap } from "../../utils/persistentMap";
 
 type LuckyLadderStatus = "ACTIVE" | "LOST" | "CASHED_OUT" | "WON";
 
@@ -17,13 +18,14 @@ type LuckyLadderSession = {
 };
 
 const router = Router();
-const sessions = new Map<string, LuckyLadderSession>();
+const sessions = new PersistentMap<LuckyLadderSession>("lucky-ladder.json");
 const ladderHistory: number[] = [];
 
 const BREAK_CHANCES = [0.14, 0.17, 0.2, 0.24, 0.29, 0.34, 0.4, 0.47, 0.55, 0.64];
 const STEP_MULTIPLIERS = [1.12, 1.28, 1.47, 1.72, 2.03, 2.43, 2.95, 3.64, 4.58, 5.9];
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
+const secureRandom = (): number => randomInt(0, 1_000_000) / 1_000_000;
 
 const pushHistory = (value: number) => {
   ladderHistory.unshift(round2(value));
@@ -33,9 +35,11 @@ const pushHistory = (value: number) => {
 };
 
 const resolveUser = async (userId?: string) => {
-  const user = userId
-    ? await prisma.user.findUnique({ where: { id: userId } })
-    : await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!userId) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
 
   return user;
 };
@@ -173,7 +177,7 @@ router.post("/climb", async (req, res) => {
     const currentIndex = session.currentStep;
     const breakChance = BREAK_CHANCES[currentIndex] ?? 1;
 
-    if (Math.random() < breakChance) {
+    if (secureRandom() < breakChance) {
       session.status = "LOST";
       session.brokenStep = Math.min(session.totalSteps, currentIndex + 1);
       session.potentialPayout = 0;

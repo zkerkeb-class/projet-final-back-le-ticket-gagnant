@@ -1,3 +1,5 @@
+import { randomInt } from "node:crypto";
+
 export type CardSuit = "H" | "D" | "C" | "S";
 export type CardValue = "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "J" | "Q" | "K" | "A";
 
@@ -77,7 +79,7 @@ export class BlackjackService {
     const shuffledDeck = [...deck];
 
     for (let i = shuffledDeck.length - 1; i > 0; i -= 1) {
-      const randomIndex = Math.floor(Math.random() * (i + 1));
+      const randomIndex = randomInt(i + 1);
       [shuffledDeck[i], shuffledDeck[randomIndex]] = [shuffledDeck[randomIndex], shuffledDeck[i]];
     }
 
