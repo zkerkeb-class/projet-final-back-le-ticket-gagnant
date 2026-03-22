@@ -9,7 +9,7 @@ const requireEnv = (name: string): string => {
 export const getJwtSecret = (): string => {
   const jwtSecret = requireEnv("JWT_SECRET");
   if (jwtSecret.length < 32) {
-    throw new Error("JWT_SECRET doit contenir au moins 32 caractères.");
+    throw new Error("JWT_SECRET doit contenir au moins 32 caracteres.");
   }
   return jwtSecret;
 };

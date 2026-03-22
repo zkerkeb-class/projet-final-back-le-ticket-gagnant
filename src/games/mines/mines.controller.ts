@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { randomInt } from "node:crypto";
 import prisma from "../../config/prisma";
 import { PersistentMap } from "../../utils/persistentMap";
+import { creditUserBalance, debitUserBalance, WalletError } from "../../utils/wallet";
 
 type MinesStatus = "ACTIVE" | "WON" | "LOST" | "CASHED_OUT";
 
@@ -86,13 +87,16 @@ const resolveUser = async (userId?: string) => {
     return null;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  return prisma.user.findUnique({ where: { id: userId } });
+};
 
-  if (!user) {
-    return null;
-  }
+const getChipBalance = async (userId: string): Promise<number> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { chipBalance: true },
+  });
 
-  return user;
+  return user?.chipBalance ?? 0;
 };
 
 router.post("/start", async (req, res) => {
@@ -113,7 +117,7 @@ router.post("/start", async (req, res) => {
       || minesCount < MINES_MIN
       || minesCount > MINES_MAX
     ) {
-      return res.status(400).json({ message: "Nombre de mines invalide (1 à 24)." });
+      return res.status(400).json({ message: "Nombre de mines invalide (1 a 24)." });
     }
 
     const user = await resolveUser(userId);
@@ -121,17 +125,10 @@ router.post("/start", async (req, res) => {
       return res.status(404).json({ message: "Utilisateur introuvable." });
     }
 
-    if (user.chipBalance < betAmount) {
-      return res.status(400).json({ message: "Solde insuffisant." });
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        chipBalance: {
-          decrement: betAmount,
-        },
-      },
+    const updatedUser = await debitUserBalance(prisma, {
+      userId: user.id,
+      amount: betAmount,
+      game: "MINES",
     });
 
     const session: MinesSession = {
@@ -152,6 +149,9 @@ router.post("/start", async (req, res) => {
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant start Mines." });
   }
 });
@@ -178,16 +178,16 @@ router.post("/reveal", async (req, res) => {
     }
 
     if (session.status !== "ACTIVE") {
-      return res.status(400).json({ message: "La session est déjà terminée." });
+      return res.status(400).json({ message: "La session est deja terminee." });
     }
 
     if (typeof userId === "string" && session.userId !== userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
     if (session.revealedCells.includes(cellIndex)) {
-      const user = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, user?.chipBalance ?? 0));
+      const chipBalance = await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
 
     if (session.minePositions.includes(cellIndex)) {
@@ -195,8 +195,8 @@ router.post("/reveal", async (req, res) => {
       session.explodedCell = cellIndex;
       session.potentialPayout = 0;
 
-      const user = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, user?.chipBalance ?? 0));
+      const chipBalance = await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
 
     session.revealedCells.push(cellIndex);
@@ -208,24 +208,24 @@ router.post("/reveal", async (req, res) => {
     const safeTotal = GRID_SIZE - session.minesCount;
 
     if (session.revealedCells.length >= safeTotal) {
-      session.status = "WON";
-
-      const updatedUser = await prisma.user.update({
-        where: { id: session.userId },
-        data: {
-          chipBalance: {
-            increment: session.potentialPayout,
-          },
-        },
+      const updatedUser = await creditUserBalance(prisma, {
+        userId: session.userId,
+        amount: session.potentialPayout,
+        game: "MINES",
       });
+
+      session.status = "WON";
 
       return res.json(buildResponse(session, updatedUser.chipBalance));
     }
 
-    const user = await prisma.user.findUnique({ where: { id: session.userId } });
-    return res.json(buildResponse(session, user?.chipBalance ?? 0));
+    const chipBalance = await getChipBalance(session.userId);
+    return res.json(buildResponse(session, chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant reveal Mines." });
   }
 });
@@ -247,31 +247,31 @@ router.post("/cashout", async (req, res) => {
     }
 
     if (session.status !== "ACTIVE") {
-      return res.status(400).json({ message: "La session est déjà terminée." });
+      return res.status(400).json({ message: "La session est deja terminee." });
     }
 
     if (typeof userId === "string" && session.userId !== userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
     if (session.revealedCells.length === 0) {
-      return res.status(400).json({ message: "Aucune case révélée: cashout impossible." });
+      return res.status(400).json({ message: "Aucune case revelee: cashout impossible." });
     }
 
-    session.status = "CASHED_OUT";
-
-    const updatedUser = await prisma.user.update({
-      where: { id: session.userId },
-      data: {
-        chipBalance: {
-          increment: session.potentialPayout,
-        },
-      },
+    const updatedUser = await creditUserBalance(prisma, {
+      userId: session.userId,
+      amount: session.potentialPayout,
+      game: "MINES",
     });
+
+    session.status = "CASHED_OUT";
 
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant cashout Mines." });
   }
 });

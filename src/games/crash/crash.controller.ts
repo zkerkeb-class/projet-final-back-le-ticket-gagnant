@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomInt, randomUUID } from "node:crypto";
 import prisma from "../../config/prisma";
 import { PersistentMap } from "../../utils/persistentMap";
+import { creditUserBalance, debitUserBalance, WalletError } from "../../utils/wallet";
 
 type CrashStatus = "ACTIVE" | "LOST" | "CASHED_OUT";
 
@@ -56,34 +57,39 @@ const resolveUser = async (userId?: string) => {
     return null;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-
-  return user;
+  return prisma.user.findUnique({ where: { id: userId } });
 };
 
-const settleIfNeeded = async (session: CrashSession): Promise<void> => {
+const getChipBalance = async (userId: string): Promise<number> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { chipBalance: true },
+  });
+
+  return user?.chipBalance ?? 0;
+};
+
+const settleIfNeeded = async (session: CrashSession): Promise<number | null> => {
   if (session.status !== "ACTIVE") {
-    return;
+    return null;
   }
 
   const currentMultiplier = getCurrentMultiplier(session.startedAt);
 
   if (session.autoCashoutAt && currentMultiplier >= session.autoCashoutAt && session.autoCashoutAt < session.crashAt) {
-    session.status = "CASHED_OUT";
-    session.cashedOutAt = session.autoCashoutAt;
-    session.payout = round2(session.betAmount * session.autoCashoutAt);
-
-    await prisma.user.update({
-      where: { id: session.userId },
-      data: {
-        chipBalance: {
-          increment: session.payout,
-        },
-      },
+    const payout = round2(session.betAmount * session.autoCashoutAt);
+    const updatedUser = await creditUserBalance(prisma, {
+      userId: session.userId,
+      amount: payout,
+      game: "CRASH",
     });
 
+    session.status = "CASHED_OUT";
+    session.cashedOutAt = session.autoCashoutAt;
+    session.payout = payout;
     pushCrashHistory(session.autoCashoutAt);
-    return;
+
+    return updatedUser.chipBalance;
   }
 
   if (currentMultiplier >= session.crashAt) {
@@ -92,6 +98,8 @@ const settleIfNeeded = async (session: CrashSession): Promise<void> => {
     session.payout = 0;
     pushCrashHistory(session.crashAt);
   }
+
+  return null;
 };
 
 const buildResponse = (session: CrashSession, chipBalance: number) => {
@@ -133,7 +141,7 @@ router.post("/start", async (req, res) => {
       && autoCashoutAt !== null
       && (typeof autoCashoutAt !== "number" || !Number.isFinite(autoCashoutAt) || autoCashoutAt <= 1)
     ) {
-      return res.status(400).json({ message: "Auto cashout invalide (doit être > 1)." });
+      return res.status(400).json({ message: "Auto cashout invalide (doit etre > 1)." });
     }
 
     const user = await resolveUser(userId);
@@ -141,17 +149,10 @@ router.post("/start", async (req, res) => {
       return res.status(404).json({ message: "Utilisateur introuvable." });
     }
 
-    if (user.chipBalance < betAmount) {
-      return res.status(400).json({ message: "Solde insuffisant." });
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        chipBalance: {
-          decrement: betAmount,
-        },
-      },
+    const updatedUser = await debitUserBalance(prisma, {
+      userId: user.id,
+      amount: betAmount,
+      game: "CRASH",
     });
 
     const session: CrashSession = {
@@ -171,6 +172,9 @@ router.post("/start", async (req, res) => {
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant start Crash." });
   }
 });
@@ -189,16 +193,18 @@ router.post("/state", async (req, res) => {
     }
 
     if (typeof userId === "string" && userId !== session.userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
-    await settleIfNeeded(session);
+    const settledBalance = await settleIfNeeded(session);
+    const chipBalance = settledBalance ?? await getChipBalance(session.userId);
 
-    const user = await prisma.user.findUnique({ where: { id: session.userId } });
-
-    return res.json(buildResponse(session, user?.chipBalance ?? 0));
+    return res.json(buildResponse(session, chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant state Crash." });
   }
 });
@@ -217,14 +223,14 @@ router.post("/cashout", async (req, res) => {
     }
 
     if (typeof userId === "string" && userId !== session.userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
-    await settleIfNeeded(session);
+    const settledBalance = await settleIfNeeded(session);
 
     if (session.status !== "ACTIVE") {
-      const userFinal = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, userFinal?.chipBalance ?? 0));
+      const chipBalance = settledBalance ?? await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
 
     const currentMultiplier = getCurrentMultiplier(session.startedAt);
@@ -235,28 +241,28 @@ router.post("/cashout", async (req, res) => {
       session.payout = 0;
       pushCrashHistory(session.crashAt);
 
-      const userLost = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, userLost?.chipBalance ?? 0));
+      const chipBalance = await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
+
+    const payout = round2(session.betAmount * currentMultiplier);
+    const updatedUser = await creditUserBalance(prisma, {
+      userId: session.userId,
+      amount: payout,
+      game: "CRASH",
+    });
 
     session.status = "CASHED_OUT";
     session.cashedOutAt = currentMultiplier;
-    session.payout = round2(session.betAmount * currentMultiplier);
-
-    const updatedUser = await prisma.user.update({
-      where: { id: session.userId },
-      data: {
-        chipBalance: {
-          increment: session.payout,
-        },
-      },
-    });
-
+    session.payout = payout;
     pushCrashHistory(currentMultiplier);
 
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant cashout Crash." });
   }
 });

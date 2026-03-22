@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import prisma from "../config/prisma";
 import { getJwtSecret } from "../config/security";
+import { INITIAL_CHIP_BALANCE, WELCOME_BONUS_GAME } from "../utils/wallet";
 import { loginSchema, registerSchema } from "../utils/validation";
 
 const authRouter = Router();
@@ -20,7 +21,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
-  message: { message: "Trop de tentatives. Réessayez plus tard." },
+  message: { message: "Trop de tentatives. Reessayez plus tard." },
 });
 
 if (ENABLE_RATE_LIMIT) {
@@ -51,22 +52,35 @@ authRouter.post("/register", async (req, res) => {
     ]);
 
     if (existingEmail) {
-      return res.status(409).json({ message: "Cet email est déjà utilisé." });
+      return res.status(409).json({ message: "Cet email est deja utilise." });
     }
 
     if (existingUsername) {
-      return res.status(409).json({ message: "Ce nom d'utilisateur est déjà utilisé." });
+      return res.status(409).json({ message: "Ce nom d'utilisateur est deja utilise." });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const createdUser = await prisma.user.create({
-      data: {
-        username: normalizedUsername,
-        email: normalizedEmail,
-        password: hashedPassword,
-        chipBalance: 1000,
-      },
+    const createdUser = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          username: normalizedUsername,
+          email: normalizedEmail,
+          password: hashedPassword,
+          chipBalance: INITIAL_CHIP_BALANCE,
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId: user.id,
+          amount: INITIAL_CHIP_BALANCE,
+          type: "DEPOSIT",
+          game: WELCOME_BONUS_GAME,
+        },
+      });
+
+      return user;
     });
 
     const token = buildToken(createdUser.id, createdUser.email);

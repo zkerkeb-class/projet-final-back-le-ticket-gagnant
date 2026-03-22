@@ -39,7 +39,7 @@ export const createApp = () => {
         return;
       }
 
-      callback(new Error("Origin non autorisée par CORS."));
+      callback(new Error("Origin non autorisee par CORS."));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -51,7 +51,7 @@ export const createApp = () => {
       max: API_RATE_LIMIT_MAX,
       standardHeaders: true,
       legacyHeaders: false,
-      message: { message: "Trop de requêtes. Réessayez plus tard." },
+      message: { message: "Trop de requetes. Reessayez plus tard." },
     }));
   }
 

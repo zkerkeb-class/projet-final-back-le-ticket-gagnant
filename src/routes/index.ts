@@ -24,7 +24,7 @@ router.get("/users/balance", requireAuth, async (req: AuthenticatedRequest, res)
   try {
     const userId = req.auth?.userId;
     if (!userId) {
-      return res.status(401).json({ message: "Non autorisé." });
+      return res.status(401).json({ message: "Non autorise." });
     }
 
     const user = await prisma.user.findUnique({ where: { id: userId } });

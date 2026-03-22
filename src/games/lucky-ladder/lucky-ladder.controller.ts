@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomInt, randomUUID } from "node:crypto";
 import prisma from "../../config/prisma";
 import { PersistentMap } from "../../utils/persistentMap";
+import { creditUserBalance, debitUserBalance, WalletError } from "../../utils/wallet";
 
 type LuckyLadderStatus = "ACTIVE" | "LOST" | "CASHED_OUT" | "WON";
 
@@ -39,9 +40,16 @@ const resolveUser = async (userId?: string) => {
     return null;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  return prisma.user.findUnique({ where: { id: userId } });
+};
 
-  return user;
+const getChipBalance = async (userId: string): Promise<number> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { chipBalance: true },
+  });
+
+  return user?.chipBalance ?? 0;
 };
 
 const buildResponse = (session: LuckyLadderSession, chipBalance: number) => {
@@ -89,17 +97,10 @@ router.post("/start", async (req, res) => {
       return res.status(404).json({ message: "Utilisateur introuvable." });
     }
 
-    if (user.chipBalance < betAmount) {
-      return res.status(400).json({ message: "Solde insuffisant." });
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        chipBalance: {
-          decrement: betAmount,
-        },
-      },
+    const updatedUser = await debitUserBalance(prisma, {
+      userId: user.id,
+      amount: betAmount,
+      game: "LUCKY_LADDER",
     });
 
     const session: LuckyLadderSession = {
@@ -119,6 +120,9 @@ router.post("/start", async (req, res) => {
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant start Lucky Ladder." });
   }
 });
@@ -137,12 +141,12 @@ router.post("/state", async (req, res) => {
     }
 
     if (typeof userId === "string" && userId !== session.userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: session.userId } });
+    const chipBalance = await getChipBalance(session.userId);
 
-    return res.json(buildResponse(session, user?.chipBalance ?? 0));
+    return res.json(buildResponse(session, chipBalance));
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Erreur serveur pendant state Lucky Ladder." });
@@ -166,12 +170,12 @@ router.post("/climb", async (req, res) => {
     }
 
     if (session.status !== "ACTIVE") {
-      const endedUser = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, endedUser?.chipBalance ?? 0));
+      const chipBalance = await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
 
     if (typeof userId === "string" && userId !== session.userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
     const currentIndex = session.currentStep;
@@ -183,8 +187,8 @@ router.post("/climb", async (req, res) => {
       session.potentialPayout = 0;
       pushHistory(0);
 
-      const lostUser = await prisma.user.findUnique({ where: { id: session.userId } });
-      return res.json(buildResponse(session, lostUser?.chipBalance ?? 0));
+      const chipBalance = await getChipBalance(session.userId);
+      return res.json(buildResponse(session, chipBalance));
     }
 
     session.currentStep = Math.min(session.totalSteps, currentIndex + 1);
@@ -192,25 +196,24 @@ router.post("/climb", async (req, res) => {
     session.potentialPayout = round2(session.betAmount * session.currentMultiplier);
 
     if (session.currentStep >= session.totalSteps) {
-      session.status = "WON";
-
-      const updatedUser = await prisma.user.update({
-        where: { id: session.userId },
-        data: {
-          chipBalance: {
-            increment: session.potentialPayout,
-          },
-        },
+      const updatedUser = await creditUserBalance(prisma, {
+        userId: session.userId,
+        amount: session.potentialPayout,
+        game: "LUCKY_LADDER",
       });
 
+      session.status = "WON";
       pushHistory(session.currentMultiplier);
       return res.json(buildResponse(session, updatedUser.chipBalance));
     }
 
-    const user = await prisma.user.findUnique({ where: { id: session.userId } });
-    return res.json(buildResponse(session, user?.chipBalance ?? 0));
+    const chipBalance = await getChipBalance(session.userId);
+    return res.json(buildResponse(session, chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant climb Lucky Ladder." });
   }
 });
@@ -232,33 +235,32 @@ router.post("/cashout", async (req, res) => {
     }
 
     if (session.status !== "ACTIVE") {
-      return res.status(400).json({ message: "La session est déjà terminée." });
+      return res.status(400).json({ message: "La session est deja terminee." });
     }
 
     if (typeof userId === "string" && userId !== session.userId) {
-      return res.status(403).json({ message: "Session non autorisée pour cet utilisateur." });
+      return res.status(403).json({ message: "Session non autorisee pour cet utilisateur." });
     }
 
     if (session.currentStep <= 0) {
       return res.status(400).json({ message: "Montez au moins une marche avant cashout." });
     }
 
-    session.status = "CASHED_OUT";
-
-    const updatedUser = await prisma.user.update({
-      where: { id: session.userId },
-      data: {
-        chipBalance: {
-          increment: session.potentialPayout,
-        },
-      },
+    const updatedUser = await creditUserBalance(prisma, {
+      userId: session.userId,
+      amount: session.potentialPayout,
+      game: "LUCKY_LADDER",
     });
 
+    session.status = "CASHED_OUT";
     pushHistory(session.currentMultiplier);
 
     return res.json(buildResponse(session, updatedUser.chipBalance));
   } catch (error) {
     console.error(error);
+    if (error instanceof WalletError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Erreur serveur pendant cashout Lucky Ladder." });
   }
 });

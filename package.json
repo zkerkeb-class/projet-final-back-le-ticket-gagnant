@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "start": "node dist/app.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
@@ -16,7 +17,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Backend API for the Le Ticket Gagnant academic project.",
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
   },

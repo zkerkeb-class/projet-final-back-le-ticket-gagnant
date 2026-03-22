@@ -7,7 +7,7 @@ import { PrismaClient } from "../src/generated/prisma/client";
 const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
-  throw new Error("DATABASE_URL est requis pour exécuter le seed Prisma.");
+  throw new Error("DATABASE_URL est requis pour executer le seed Prisma.");
 }
 
 const pool = new Pool({ connectionString: databaseUrl });
@@ -58,8 +58,8 @@ async function main() {
   });
 
   console.log("Seed completed:");
-  console.log(`  - User: ${user1.username} (${user1.email}) — ${user1.chipBalance} jetons`);
-  console.log(`  - User: ${user2.username} (${user2.email}) — ${user2.chipBalance} jetons`);
+  console.log(`  - User: ${user1.username} (${user1.email}) - ${user1.chipBalance} jetons`);
+  console.log(`  - User: ${user2.username} (${user2.email}) - ${user2.chipBalance} jetons`);
 }
 
 main()
